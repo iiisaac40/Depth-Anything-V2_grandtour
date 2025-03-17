@@ -147,7 +147,7 @@ def main():
 
         
         # Add this after the cur_results line
-        if (rank == 0 and i % 10 == 0) and arg.vis_res == 'TRUE':  # Visualize every 10th sample
+        if (rank == 0 and i % 10 == 0) and args.vis_res == 'TRUE':  # Visualize every 10th sample
             import cv2
             import matplotlib.pyplot as plt
 
