@@ -22,11 +22,15 @@ from util.dist_helper import setup_distributed
 from util.loss import *
 from util.utils import init_log
 
+import os
+import sys
+sys.path.append('/home/grand_tour_depth_benchmark/utils')
+from depth_alignment_utils import align_depth_least_squares
+
 def eval_depth(pred, target):
     assert pred.shape == target.shape
 
     thresh = torch.max((target / pred), (pred / target))
-
     d1 = torch.sum(thresh < 1.25).float() / len(thresh)
     d2 = torch.sum(thresh < 1.25 ** 2).float() / len(thresh)
     d3 = torch.sum(thresh < 1.25 ** 3).float() / len(thresh)
@@ -53,6 +57,8 @@ parser = argparse.ArgumentParser(description='Depth Anything V2 for Metric Depth
 parser.add_argument('--encoder', default='vitl', choices=['vits', 'vitb', 'vitl', 'vitg'])
 parser.add_argument('--dataset', default='grandtour', choices=['hypersim', 'vkitti', 'grandtour'])
 parser.add_argument('--dataset_file_path', type=str, help='the path pointing to the dataset')
+parser.add_argument('--depth_alignment', type=str, default='TRUE', choices=['TRUE', 'FALSE'], help='Activate Depth Alignment or Not')
+parser.add_argument('--vis_res', type=str,default='TRUE', choices=['TRUE', 'FALSE'], help='Activate Saving Visualization Result')
 parser.add_argument('--img_size', default=518, type=int)
 parser.add_argument('--min_depth', default=0.1, type=float)
 parser.add_argument('--max_depth', default=20, type=float)
@@ -132,12 +138,16 @@ def main():
             pred = model(img)  # pred: B, C, W
             pred = F.interpolate(pred[:, None], depth.shape[-2:], mode='bilinear', align_corners=True)[0, 0]
         
-        
+
         valid_mask = (valid_mask == 1) & (depth >= args.min_depth) & (depth <= args.max_depth)
-        print(f"valid_mask shape: {valid_mask.shape}")
+        if args.depth_alignment == 'TRUE':
+            aligned_pred, _, _ = align_depth_least_squares(pred.cpu().numpy(), depth.cpu().numpy(), valid_mask.cpu().numpy())
+            aligned_pred = np.clip(aligned_pred, a_min=args.min_depth, a_max=args.max_depth)
+            pred = torch.tensor(aligned_pred, dtype=torch.float32, device=local_rank)
+
         
         # Add this after the cur_results line
-        if rank == 0 and i % 10 == 0:  # Visualize every 10th sample
+        if (rank == 0 and i % 10 == 0) and arg.vis_res == 'TRUE':  # Visualize every 10th sample
             import cv2
             import matplotlib.pyplot as plt
 
@@ -146,23 +156,19 @@ def main():
             img_np = np.clip(img_np, 0, 1)
 
             valid_mask_np = valid_mask.cpu().numpy().astype(np.uint8)
-            # print(f"valid_mask_np: sum: {valid_mask_np}")
-            unique, counts = np.unique(valid_mask_np, return_counts=True)
-            print(f"valid_mask_np occurence: {dict(zip(unique, counts))}")
         
-
             pred_np = pred.cpu().numpy()
             depth_np = depth.cpu().numpy()
-            # depth_np[depth_np <= 0.1] = 80.0
-            img_np = img[0].cpu().numpy().transpose(1, 2, 0)  # [H, W, 3]
             
+            print(f"pred depth: min: {np.min(pred_np)}, max: {np.max(pred_np)}")
+            print(f"depth_np: min: {np.min(depth_np)}, max: {np.max(depth_np)}")
             
             valid_mask_vis = np.zeros_like(pred_np)
             valid_mask_vis[valid_mask_np == 1] = 1
         
             
             # Create output dir
-            os.makedirs("/home/output/visualizations/KITTI", exist_ok=True)
+            os.makedirs("/home/output/visualizations/GrandTour_DepthAny", exist_ok=True)
                         
             # Add prediction visualization to the plot
             plt.figure(figsize=(30, 20))
@@ -179,25 +185,25 @@ def main():
             
             # Prediction
             plt.subplot(223)
-            plt.imshow(pred_np, cmap='turbo_r', vmin=args.min_depth, vmax=args.max_depth)
+            plt.imshow(pred_np, cmap='turbo_r', vmin=np.min(pred_np), vmax=np.max(pred_np))
             plt.colorbar(label='Depth (m)')
             plt.title("Predicted Depth")
 
             # GT depth
             plt.subplot(224)
-            plt.imshow(depth_np, cmap='turbo_r', vmin=args.min_depth, vmax=args.max_depth)
+            plt.imshow(depth_np, cmap='turbo_r', vmin=np.min(depth_np), vmax=np.max(depth_np))
             plt.colorbar(label='Depth (m)')
             plt.title("GT Depth")
             
             image_path = sample['image_path'][0]
             print(f"image_path: {image_path}")
             timestamp = image_path.split()[0].split('/')[-1].split('.')[0]
-            plt.savefig(f"/home/output/visualizations/KITTI/sample_{timestamp}.png")
+            plt.savefig(f"/home/output/visualizations/GrandTour_DepthAny/sample_{timestamp}.png")
             plt.close()
+
         
         if valid_mask.sum() < 10:
             continue
-        print(f"pred shape: {pred.shape}, depth shape: {depth.shape}, img shape: {img.shape} ")
         cur_results = eval_depth(pred[valid_mask], depth[valid_mask])
         
         for k in results.keys():

@@ -39,7 +39,7 @@ class GRANDTOUR(Dataset):
         image = cv2.imread(img_path)
         image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB) / 255.0
         
-        depth = cv2.imread(depth_path, cv2.IMREAD_ANYCOLOR | cv2.IMREAD_ANYDEPTH) / 100.0  # cm to m
+        depth = cv2.imread(depth_path, cv2.IMREAD_ANYCOLOR | cv2.IMREAD_ANYDEPTH) / 1000.0  # cm to m
         if depth.ndim == 3:
             depth = depth[:, :, 0] 
         depth = depth.squeeze()
@@ -49,7 +49,7 @@ class GRANDTOUR(Dataset):
 
         sample['image'] = torch.from_numpy(sample['image'])
         sample['depth'] = torch.from_numpy(sample['depth'])
-        print(f"sample['depth'] shape: {sample['depth'].shape}")
+        
         sample['valid_mask'] = (sample['depth'] <= 80) & (sample['depth'] > 0)
         
         sample['image_path'] = self.filelist[item].split(' ')[0]
