@@ -6,6 +6,7 @@ import random
 
 import warnings
 import numpy as np
+from numpy.polynomial.polyutils import RankWarning
 import torch
 import torch.backends.cudnn as cudnn
 import torch.distributed as dist
@@ -17,6 +18,7 @@ from torch.utils.tensorboard import SummaryWriter
 from dataset.hypersim import Hypersim
 from dataset.kitti import KITTI
 from dataset.vkitti2 import VKITTI2
+from dataset.grandtour import GRANDTOUR
 from depth_anything_v2.dpt import DepthAnythingV2
 from util.dist_helper import setup_distributed
 from util.loss import SiLogLoss
@@ -27,7 +29,7 @@ from util.utils import init_log
 parser = argparse.ArgumentParser(description='Depth Anything V2 for Metric Depth Estimation')
 
 parser.add_argument('--encoder', default='vitl', choices=['vits', 'vitb', 'vitl', 'vitg'])
-parser.add_argument('--dataset', default='hypersim', choices=['hypersim', 'vkitti'])
+parser.add_argument('--dataset', default='hypersim', choices=['hypersim', 'vkitti', 'grandtour'])
 parser.add_argument('--img-size', default=518, type=int)
 parser.add_argument('--min-depth', default=0.001, type=float)
 parser.add_argument('--max-depth', default=20, type=float)
@@ -38,12 +40,13 @@ parser.add_argument('--pretrained-from', type=str)
 parser.add_argument('--save-path', type=str, required=True)
 parser.add_argument('--local-rank', default=0, type=int)
 parser.add_argument('--port', default=None, type=int)
+parser.add_argument('--accumulation_level', default=5, type=int)
 
 
 def main():
     args = parser.parse_args()
     
-    warnings.simplefilter('ignore', np.RankWarning)
+    warnings.simplefilter('ignore', RankWarning)
     
     logger = init_log('global', logging.INFO)
     logger.propagate = 0
@@ -63,6 +66,8 @@ def main():
         trainset = Hypersim('dataset/splits/hypersim/train.txt', 'train', size=size)
     elif args.dataset == 'vkitti':
         trainset = VKITTI2('dataset/splits/vkitti2/train.txt', 'train', size=size)
+    elif args.dataset == 'grandtour':
+        trainset = GRANDTOUR(f'dataset/splits/grandtour/train_{args.accumulation_level}.txt', 'train', size=size, parent_data_dir='/mnt/GrandTour')
     else:
         raise NotImplementedError
     trainsampler = torch.utils.data.distributed.DistributedSampler(trainset)
@@ -72,6 +77,8 @@ def main():
         valset = Hypersim('dataset/splits/hypersim/val.txt', 'val', size=size)
     elif args.dataset == 'vkitti':
         valset = KITTI('dataset/splits/kitti/val.txt', 'val', size=size)
+    elif args.dataset == 'grandtour':
+        valset = GRANDTOUR(f'dataset/splits/grandtour/val_{args.accumulation_level}.txt', 'val', size=size, parent_data_dir='/mnt/GrandTour')
     else:
         raise NotImplementedError
     valsampler = torch.utils.data.distributed.DistributedSampler(valset)
