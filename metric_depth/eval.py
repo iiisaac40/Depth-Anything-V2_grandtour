@@ -13,6 +13,7 @@ import torch.distributed as dist
 from torch.utils.data import DataLoader
 import torch.nn.functional as F
 from tqdm import tqdm
+import csv
 
 from dataset.hypersim import Hypersim
 from dataset.kitti import KITTI
@@ -58,10 +59,11 @@ parser.add_argument('--encoder', default='vitl', choices=['vits', 'vitb', 'vitl'
 parser.add_argument('--dataset', default='grandtour', choices=['hypersim', 'vkitti', 'grandtour'])
 parser.add_argument('--dataset_file_path', type=str, help='the path pointing to the dataset')
 parser.add_argument('--depth_alignment', type=str, default='TRUE', choices=['TRUE', 'FALSE'], help='Activate Depth Alignment or Not')
-parser.add_argument('--vis_res', type=str,default='TRUE', choices=['TRUE', 'FALSE'], help='Activate Saving Visualization Result')
+parser.add_argument('--vis_res', type=str,default='FALSE', choices=['TRUE', 'FALSE'], help='Activate Saving Visualization Result')
+parser.add_argument('--csv_file', type=str, default="metric.csv", help='Save Metric to CSV file')
 parser.add_argument('--img_size', default=518, type=int)
 parser.add_argument('--min_depth', default=0.1, type=float)
-parser.add_argument('--max_depth', default=20, type=float)
+parser.add_argument('--max_depth', default=60, type=float)
 parser.add_argument('--pretrained_from', type=str)
 parser.add_argument('--local_rank', default=0, type=int)
 parser.add_argument('--port', default=None, type=int)
@@ -165,10 +167,14 @@ def main():
             
             valid_mask_vis = np.zeros_like(pred_np)
             valid_mask_vis[valid_mask_np == 1] = 1
+
+            error_map = np.abs(pred_np - depth_np)
+            min_error, max_error = np.min(error_map), np.max(error_map)
+            error_map[~valid_mask_np] = np.nan 
         
             
             # Create output dir
-            os.makedirs("/home/output/visualizations/GrandTour_DepthAny", exist_ok=True)
+            os.makedirs("/home/output/visualizations/GrandTour_DepthAny_forest", exist_ok=True)
                         
             # Add prediction visualization to the plot
             plt.figure(figsize=(30, 20))
@@ -178,10 +184,11 @@ def main():
             plt.imshow(img_np)
             plt.title("Original Image")
             
-            # Valid Mask
+            # Error Map
             plt.subplot(222)
-            plt.imshow(valid_mask_vis)
-            plt.title("Valid Regions")
+            plt.imshow(error_map, cmap='turbo_r', vmin=min_error, vmax=max_error)
+            plt.colorbar(label='Depth (m)')
+            plt.title("Error Map")
             
             # Prediction
             plt.subplot(223)
@@ -198,7 +205,7 @@ def main():
             image_path = sample['image_path'][0]
             print(f"image_path: {image_path}")
             timestamp = image_path.split()[0].split('/')[-1].split('.')[0]
-            plt.savefig(f"/home/output/visualizations/GrandTour_DepthAny/sample_{timestamp}.png")
+            plt.savefig(f"/home/output/visualizations/GrandTour_DepthAny_forest/sample_{timestamp}.png")
             plt.close()
 
         
@@ -220,17 +227,28 @@ def main():
     dist.reduce(nsamples, dst=0)
     
     if rank == 0:
+        averaged_metrics = {k: (v / nsamples).item() for k, v in results.items()}
+    
         logger.info('==========================================================================================')
         logger.info('{:>8}, {:>8}, {:>8}, {:>8}, {:>8}, {:>8}, {:>8}, {:>8}, {:>8}, {:>8}'.format(*tuple(results.keys())))
         logger.info('{:8.3f}, {:8.3f}, {:8.3f}, {:8.3f}, {:8.3f}, {:8.3f}, {:8.3f}, {:8.3f}, {:8.3f}, {:8.3f}'.format(*tuple([(v / nsamples).item() for v in results.values()])))
         logger.info('==========================================================================================')
         print()
     
-    for k in results.keys():
-        if k in ['d1', 'd2', 'd3']:
-            previous_best[k] = max(previous_best[k], (results[k] / nsamples).item())
-        else:
-            previous_best[k] = min(previous_best[k], (results[k] / nsamples).item())
+        csv_file = args.csv_file
+        with open(csv_file, mode='a', newline='') as f:
+            writer = csv.DictWriter(f, fieldnames=results.keys())
+            
+            if f.tell() == 0:
+                writer.writeheader()
+            
+            writer.writerow(averaged_metrics)
+        
+        for k in results.keys():
+            if k in ['d1', 'd2', 'd3']:
+                previous_best[k] = max(previous_best[k], (results[k] / nsamples).item())
+            else:
+                previous_best[k] = min(previous_best[k], (results[k] / nsamples).item())
 
 
 if __name__ == '__main__':
