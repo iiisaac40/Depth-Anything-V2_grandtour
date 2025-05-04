@@ -27,9 +27,19 @@ def setup_distributed(backend="nccl", port=None):
         os.environ["WORLD_SIZE"] = str(world_size)
         os.environ["LOCAL_RANK"] = str(rank % num_gpus)
         os.environ["RANK"] = str(rank)
-    else:
+    elif "LOCAL_RANK" in os.environ:
         num_gpus = torch.cuda.device_count()
     
+        os.environ.setdefault("MASTER_ADDR", "127.0.0.1")
+        os.environ.setdefault("MASTER_PORT", str(port))
+        
+        # Get RANK/WORLD_SIZE from environment (set by launcher)
+        rank = int(os.environ.get("RANK", 0))
+        world_size = int(os.environ.get("WORLD_SIZE", 1))
+        local_rank = int(os.environ.get("LOCAL_RANK", 0))
+    else:
+        num_gpus = torch.cuda.device_count()
+
         os.environ.setdefault("MASTER_ADDR", "127.0.0.1")
         os.environ.setdefault("MASTER_PORT", str(port or 29500))
         os.environ.setdefault("RANK", "0")
@@ -39,8 +49,10 @@ def setup_distributed(backend="nccl", port=None):
         rank = int(os.environ["RANK"])
         world_size = int(os.environ["WORLD_SIZE"])
         os.environ["LOCAL_RANK"] = str(rank % num_gpus)
+        local_rank = int(os.environ.get("LOCAL_RANK", 0))
 
-    torch.cuda.set_device(rank % num_gpus)
+
+    torch.cuda.set_device(local_rank)
 
     dist.init_process_group(
         backend=backend,

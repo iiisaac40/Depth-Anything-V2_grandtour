@@ -32,6 +32,9 @@ def eval_depth(pred, target):
     assert pred.shape == target.shape
 
     thresh = torch.max((target / pred), (pred / target))
+    print(f"d1 sum: {torch.sum(thresh < 1.25).float()}")
+    print(f"d2 sum: {torch.sum(thresh < 1.25 ** 2).float()}")
+    print(f"d2 sum: {torch.sum(thresh < 1.25 ** 3).float()}")
     d1 = torch.sum(thresh < 1.25).float() / len(thresh)
     d2 = torch.sum(thresh < 1.25 ** 2).float() / len(thresh)
     d3 = torch.sum(thresh < 1.25 ** 3).float() / len(thresh)
@@ -56,9 +59,9 @@ def eval_depth(pred, target):
 parser = argparse.ArgumentParser(description='Depth Anything V2 for Metric Depth Estimation')
 
 parser.add_argument('--encoder', default='vitl', choices=['vits', 'vitb', 'vitl', 'vitg'])
-parser.add_argument('--dataset', default='grandtour', choices=['hypersim', 'vkitti', 'grandtour'])
+parser.add_argument('--dataset', default='grandtour', choices=['hypersim', 'vkitti', 'grandtour', 'kitti'])
 parser.add_argument('--dataset_file_path', type=str, help='the path pointing to the dataset')
-parser.add_argument('--depth_alignment', type=str, default='TRUE', choices=['TRUE', 'FALSE'], help='Activate Depth Alignment or Not')
+parser.add_argument('--depth_alignment', type=str, default='FALSE', choices=['TRUE', 'FALSE'], help='Activate Depth Alignment or Not')
 parser.add_argument('--vis_res', type=str,default='FALSE', choices=['TRUE', 'FALSE'], help='Activate Saving Visualization Result')
 parser.add_argument('--csv_file', type=str, default="metric.csv", help='Save Metric to CSV file')
 parser.add_argument('--img_size', default=518, type=int)
@@ -69,6 +72,7 @@ parser.add_argument('--local_rank', default=0, type=int)
 parser.add_argument('--port', default=None, type=int)
 
 
+
 def main():
     args = parser.parse_args()
     
@@ -76,7 +80,7 @@ def main():
     
     logger = init_log('global', logging.INFO)
     logger.propagate = 0
-    
+
     rank, world_size = setup_distributed(port=args.port)
     
     cudnn.enabled = True
@@ -89,7 +93,7 @@ def main():
         valset = KITTI('dataset/splits/kitti/val.txt', 'val', size=size)
     elif args.dataset == 'grandtour':
         from dataset.grandtour import GRANDTOUR
-        valset = GRANDTOUR(args.dataset_file_path, 'val', size=size, parent_data_dir='/'.join(args.dataset_file_path.split('/')[:-2]))
+        valset = GRANDTOUR(args.dataset_file_path, 'test', max_depth=args.max_depth, size=size, parent_data_dir='/mnt/GrandTour')
     elif args.dataset == 'kitti':
         from dataset.kitti import KITTI
         valset = KITTI(args.dataset_file_path, 'val', size=size) # parent_data_dir='/'.join(args.dataset_file_path.split('/')[:-2])
@@ -97,7 +101,7 @@ def main():
     else:
         raise NotImplementedError
     valsampler = torch.utils.data.distributed.DistributedSampler(valset)
-    valloader = DataLoader(valset, batch_size=1, pin_memory=True, num_workers=1, drop_last=True, sampler=valsampler)
+    valloader = DataLoader(valset, batch_size=1, pin_memory=True, num_workers=6, drop_last=True, sampler=valsampler)
     
     local_rank = int(os.environ["LOCAL_RANK"])
     
@@ -110,7 +114,13 @@ def main():
     model = DepthAnythingV2(**{**model_configs[args.encoder], 'max_depth': args.max_depth})
     
     if args.pretrained_from:
-        model.load_state_dict(torch.load(args.pretrained_from, map_location='cpu'))
+        # model.load_state_dict(torch.load(args.pretrained_from, map_location='cpu'))
+        # model.load_state_dict({k: v for k, v in torch.load(args.pretrained_from, map_location='cpu').items() if 'pretrained' in k}, strict=False)
+        old_dict = torch.load(args.pretrained_from, map_location='cpu')
+        if "model" in old_dict:
+            old_dict = old_dict["model"]
+        new_dict = {key.replace('module.', ''): value for key, value in old_dict.items()}
+        model.load_state_dict(new_dict)
 
     
     model = torch.nn.SyncBatchNorm.convert_sync_batchnorm(model)
@@ -148,70 +158,141 @@ def main():
             pred = torch.tensor(aligned_pred, dtype=torch.float32, device=local_rank)
 
         
-        # Add this after the cur_results line
-        if (rank == 0 and i % 10 == 0) and args.vis_res == 'TRUE':  # Visualize every 10th sample
-            import cv2
-            import matplotlib.pyplot as plt
-
-            img_np = img[0].cpu().numpy().transpose(1, 2, 0)
-            img_np = img_np * np.array([0.229, 0.224, 0.225]) + np.array([0.485, 0.456, 0.406])
-            img_np = np.clip(img_np, 0, 1)
-
-            valid_mask_np = valid_mask.cpu().numpy().astype(np.uint8)
-        
-            pred_np = pred.cpu().numpy()
-            depth_np = depth.cpu().numpy()
-            
-            print(f"pred depth: min: {np.min(pred_np)}, max: {np.max(pred_np)}")
-            print(f"depth_np: min: {np.min(depth_np)}, max: {np.max(depth_np)}")
-            
-            valid_mask_vis = np.zeros_like(pred_np)
-            valid_mask_vis[valid_mask_np == 1] = 1
-
-            error_map = np.abs(pred_np - depth_np)
-            min_error, max_error = np.min(error_map), np.max(error_map)
-            error_map[~valid_mask_np] = np.nan 
-        
-            
-            # Create output dir
-            os.makedirs("/home/output/visualizations/GrandTour_DepthAny_forest", exist_ok=True)
-                        
-            # Add prediction visualization to the plot
-            plt.figure(figsize=(30, 20))
-            
-            # Original Image
-            plt.subplot(221)
-            plt.imshow(img_np)
-            plt.title("Original Image")
-            
-            # Error Map
-            plt.subplot(222)
-            plt.imshow(error_map, cmap='turbo_r', vmin=min_error, vmax=max_error)
-            plt.colorbar(label='Depth (m)')
-            plt.title("Error Map")
-            
-            # Prediction
-            plt.subplot(223)
-            plt.imshow(pred_np, cmap='turbo_r', vmin=np.min(pred_np), vmax=np.max(pred_np))
-            plt.colorbar(label='Depth (m)')
-            plt.title("Predicted Depth")
-
-            # GT depth
-            plt.subplot(224)
-            plt.imshow(depth_np, cmap='turbo_r', vmin=np.min(depth_np), vmax=np.max(depth_np))
-            plt.colorbar(label='Depth (m)')
-            plt.title("GT Depth")
-            
-            image_path = sample['image_path'][0]
-            print(f"image_path: {image_path}")
-            timestamp = image_path.split()[0].split('/')[-1].split('.')[0]
-            plt.savefig(f"/home/output/visualizations/GrandTour_DepthAny_forest/sample_{timestamp}.png")
-            plt.close()
-
-        
         if valid_mask.sum() < 10:
             continue
         cur_results = eval_depth(pred[valid_mask], depth[valid_mask])
+
+        # Add this after the cur_results line
+        if (rank == 0 and i % 10 == 0) and args.vis_res == 'TRUE':  # Visualize every 10th sample, and i % 10 == 0
+            import cv2
+            import matplotlib.pyplot as plt
+
+            img_np = F.interpolate(img, depth.shape[-2:], mode='bilinear', align_corners=True)
+        
+            print(f"before img_np: {img_np.shape}")
+            print(f"before img: {img.shape} and depth: {depth.shape}")
+            img_np = img_np.squeeze(0).permute(1, 2, 0).cpu().numpy()
+            img_np = img_np * np.array([0.229, 0.224, 0.225]) + np.array([0.485, 0.456, 0.406])
+            img_np = np.clip(img_np, 0, 1)
+            print(f"img_np: {img_np.shape}")
+        
+            pred_np = pred.cpu().numpy()
+            depth_np = depth.cpu().numpy()
+            # depth_np[depth_np == 0] = np.nan
+            
+            valid_pred = pred[valid_mask].cpu().numpy()
+            valid_depth = depth[valid_mask].cpu().numpy()
+            print(f"pred depth: min: {np.min(valid_pred)}, max: {np.max(valid_pred)}")
+            print(f"depth_np: min: {np.min(valid_depth)}, max: {np.max(valid_depth)}")
+            
+
+            # Calculate error only on valid regions
+            error_values = np.abs(valid_pred - valid_depth)
+            cmap = plt.get_cmap("turbo_r")
+            norm_error_values = (error_values - np.min(error_values)) / (np.max(error_values) - np.min(error_values))
+            color_norm_error_values = (cmap(norm_error_values)[..., :3] * 255).astype(np.uint8)
+            
+            # error_map = np.full_like(pred_np, fill_value=60)  
+            error_map = np.zeros((pred_np.shape[0], pred_np.shape[1], 3), dtype=np.uint8)
+            error_map[valid_mask.cpu().numpy()] = (0.8 * color_norm_error_values + (1 - 0.8) * error_map[valid_mask.cpu().numpy()]).astype(np.uint8)  
+
+            min_error = np.nanmin(error_values)
+            max_error = np.nanmax(error_values)
+            print(f"min_error: {min_error}; max_error: {max_error}")
+
+            print(f"cur_results: {cur_results}")
+                
+            
+            # Create output dir
+            os.makedirs(f"/mnt/GrandTour/visualizations/{args.csv_file.split('/')[-1].split('.')[-2]}", exist_ok=True) # args.dataset_file_path.split('/')[-1].split('.')[-2]
+                        
+            # Add prediction visualization to the plot
+            metrics_text = "\n".join([f"{k}: {v:.4f}" for k, v in cur_results.items()])
+
+            fig, axes = plt.subplots(2, 3, figsize=(36, 20))
+            fig.subplots_adjust(wspace=0.1, hspace=0.2)  # Adjust spacing between subplots
+
+            # First row
+            axes[0, 0].imshow(img_np)
+            axes[0, 0].set_title("Original Image")
+            axes[0, 0].axis('off')
+
+            im = axes[0, 1].imshow(error_map, cmap='turbo_r', vmin=min_error, vmax=max_error)
+            fig.colorbar(im, ax=axes[0, 1], fraction=0.046, pad=0.04, label='Depth (m)')
+            axes[0, 1].set_title("Error Map")
+            axes[0, 1].axis('off')
+
+            norm_pred_np = (pred_np - np.min(pred_np)) / (np.max(pred_np) - np.min(pred_np))
+            im = axes[0, 2].imshow(norm_pred_np, cmap='turbo_r', vmin=np.min(norm_pred_np), vmax=np.max(norm_pred_np))
+            fig.colorbar(im, ax=axes[0, 2], fraction=0.046, pad=0.04, label='Depth (m)')
+            axes[0, 2].set_title("Normalized Predicted Depth")
+            axes[0, 2].axis('off')
+
+            # Second row
+            im = axes[1, 0].imshow(pred_np, cmap='turbo_r', vmin=np.min(depth_np), vmax=np.max(depth_np))
+            fig.colorbar(im, ax=axes[1, 0], fraction=0.046, pad=0.04, label='Depth (m)')
+            axes[1, 0].set_title("Predicted Depth")
+            axes[1, 0].axis('off')
+
+            im = axes[1, 1].imshow(depth_np, cmap='turbo_r', vmin=np.min(depth_np), vmax=np.max(depth_np))
+            fig.colorbar(im, ax=axes[1, 1], fraction=0.046, pad=0.04, label='Depth (m)')
+            axes[1, 1].set_title("GT Depth")
+            axes[1, 1].axis('off')
+
+            norm_depth_np = (depth_np - np.min(depth_np)) / (np.max(depth_np) - np.min(depth_np))
+            cmap = plt.get_cmap('turbo_r')
+            colored_depth = cmap(norm_depth_np)[..., :3] 
+
+            # Alpha blend with RGB image
+            overlay_img = np.copy(img_np)
+            overlay_img[valid_mask.cpu().numpy()] = colored_depth[valid_mask.cpu().numpy()]
+
+            axes[1, 2].imshow(overlay_img)
+            axes[1, 2].set_title("GT Depth Overlay")
+            axes[1, 2].axis('off')
+
+            plt.figtext(0.5, 0.05,  # Center bottom
+            metrics_text,
+            ha='center',
+            fontsize=14,
+            bbox=dict(facecolor='white', alpha=0.8))
+
+            
+            base_vis_dir = f"/mnt/GrandTour/visualizations/{args.csv_file.split('/')[-1].split('.')[-2]}"
+            os.makedirs(base_vis_dir, exist_ok=True)
+
+            # Prepare timestamp
+            image_path = sample['image_path'][0]
+            timestamp =  image_path.split()[0].split('/')[-1].split('.')[0]
+
+            # Visualization mappings
+            visuals = {
+                "original_image": (img_np, None, "Original Image"),
+                "error_map": (error_map, (min_error, max_error), "Error Map"),
+                "normalized_pred_depth": (norm_pred_np, (np.min(norm_pred_np), np.max(norm_pred_np)), "Normalized Predicted Depth"),
+                "predicted_depth": (pred_np, (np.min(depth_np), np.max(depth_np)), "Predicted Depth"),
+                "gt_depth": (depth_np, (np.min(depth_np), np.max(depth_np)), "GT Depth"),
+                "gt_overlay": (overlay_img, None, "GT Depth Overlay"),
+            }
+
+            for key, (data, vrange, title) in visuals.items():
+                fig, ax = plt.subplots(figsize=(12, 6))
+                if vrange:
+                    im = ax.imshow(data, cmap='turbo_r', vmin=vrange[0], vmax=vrange[1])
+                    plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04, label='Depth (m)')
+                else:
+                    ax.imshow(data)
+                ax.set_title(title)
+                ax.axis('off')
+
+                out_dir = os.path.join(base_vis_dir, key)
+                os.makedirs(out_dir, exist_ok=True)
+                plt.savefig(os.path.join(out_dir, f"{timestamp}.png"))
+                plt.close()
+
+
+        print(f"gt: {depth[valid_mask].max()}, {depth[valid_mask].min()}")
+        print(f"pred: {pred[valid_mask].max()}, {pred[valid_mask].min()}")
         
         for k in results.keys():
             results[k] += cur_results[k]

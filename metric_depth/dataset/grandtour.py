@@ -8,10 +8,11 @@ from dataset.transform import Resize, NormalizeImage, PrepareForNet, Crop
 
 
 class GRANDTOUR(Dataset):
-    def __init__(self, filelist_path, mode, size=(518, 518), parent_data_dir=''):
+    def __init__(self, filelist_path, mode, size=(518, 518), max_depth=60, parent_data_dir=''):
         
         self.mode = mode
         self.size = size
+        self.max_depth = max_depth
         self.parent_data_dir = parent_data_dir
         
         with open(filelist_path, 'r') as f:
