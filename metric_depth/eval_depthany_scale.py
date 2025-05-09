@@ -66,7 +66,7 @@ apptainer exec --nv --containall --writable --env LD_LIBRARY_PATH=/usr/lib/x86_6
   python /home/grand_tour_depth_benchmark/third_parties/Depth-Anything-V2_grandtour/metric_depth/eval.py \
   --pretrained_from /home/grand_tour_depth_benchmark/third_parties/Depth-Anything-V2_grandtour/metric_depth/exp{max_depth}/grandtour{str(accum_frames)}/latest.pth    \
   --max_depth {max_depth} --depth_alignment {depth_alignment} \
-  --dataset_file_path {test_txt} --dataset_root_dir /mnt/GrandTour/  \
+  --dataset_txt_path {test_txt} --dataset_root_dir /mnt/GrandTour/  \
   --csv_file {csv_file}  --port {master_port} --dataset grandtour --vis_res FALSE
   "
 
