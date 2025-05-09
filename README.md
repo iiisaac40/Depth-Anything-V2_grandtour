@@ -6,12 +6,16 @@ Check [metric_depth/eval.py](metric_depth/eval.py).
 Script to run:
 
 ```bash
+# change your `--dataset_root_dir` accordingly
 python eval.py \
   --pretrained_from /home/grand_tour_depth_benchmark/third_parties/Depth-Anything-V2_grandtour/checkpoints/depth_anything_v2_metric_vkitti_vitl.pth    \
   --max_depth {max_depth} \
   --dataset_file_path {test_txt} \
+  --dataset_root_dir /mnt/GrandTour/ \
   --csv_file {csv_file}  --port {master_port} --dataset grandtour --vis_res FALSE
 ```
+
+To run it in scale in cluster, refers to [metric_depth/eval_depthany_scale.py](metric_depth/eval_depthany_scale.py)
 
 ## For Fine-tune
 Check [metric_depth/finetune_cluster.py](metric_depth/finetune_cluster.py). 

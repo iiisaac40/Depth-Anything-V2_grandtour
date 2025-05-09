@@ -1,53 +1,88 @@
 import os
-import pandas as pd
+import glob
+import random
 
-eval_list = ['/home/output/GrandTour/2024-11-02-17-10-25']
-ckpt_path = '/home/grand_tour_depth_benchmark/third_parties/Depth-Anything-V2_grandtour/checkpoints/depth_anything_v2_metric_vkitti_vitl.pth'
-# depth_alignment = 'FALSE'
-max_depth = 60
+SCHEDULE = True
+submit_dir ="/cluster/home/haozhu1/Thesis/result/.eval_depthany"
+# ckpt: /home/grand_tour_depth_benchmark/third_parties/Depth-Anything-V2_grandtour/metric_depth/exp{max_depth}/grandtour{str(accum_frames)}/latest.pth
+# ckpt: /home/grand_tour_depth_benchmark/third_parties/Depth-Anything-V2_grandtour/checkpoints/depth_anything_v2_metric_vkitti_vitl.pth
+if not os.path.exists(submit_dir):
+    os.makedirs(submit_dir)
 
 
-for depth_alignment in ['TRUE', 'FALSE']:
-    metric_summary = {}
-    csv_pattern = 'DepthAny_noAlignment_metric' if depth_alignment == 'FALSE' else 'DepthAny_Alignment_metric'
+depth_alignment = 'FALSE'
 
-    for data_eval in eval_list:
-        date_str = os.path.basename(data_eval)
-        metric_summary[date_str] = {}
+txt_file = '/mnt/txt_files/'
+for max_depth in [80, 60, 40, 20]:
+    for accum_frames in [1, 5, 25, 50, 100, 150]:
+        csv_pattern = f'depthAny_accum{str(accum_frames)}_maxdepth{max_depth}'
+    
+        test_txt = os.path.join(txt_file, f'test_1_files.txt')
+        csv_file = test_txt.replace('files.txt', f'{csv_pattern}.csv')
+    
+        # test_txt = os.path.join('/mnt/KITTI', "val_pairs.txt")
+        # csv_file = test_txt.replace('pairs.txt', f'{csv_pattern}.csv')
+    
+    
+        master_port = random.randint(10000, 20000)
+        content = f"""#!/bin/bash
 
-        for accumu_level in [1, 5, 25, 50, 100, 150]:
-            txt_file = os.path.join(data_eval, f"accumulate_{str(accumu_level)}_pairs.txt")
-            csv_file = txt_file.replace('pairs.txt', f'_2024-11-02-17-10-25_{csv_pattern}.csv')
-            print(f"evaluating dataset: {data_eval} in accumulate level {str(accumu_level)}")
-            os.system(f"python /home/grand_tour_depth_benchmark/third_parties/Depth-Anything-V2_grandtour/metric_depth/eval.py \
-                        --pretrained_from {ckpt_path} --max_depth {max_depth} --depth_alignment {depth_alignment} \
-                        --dataset_file_path {txt_file} --csv_file {csv_file}")
-            
-            csv_file = txt_file.replace('_pairs.txt', '_depth_anything_noAlignment_metric.csv')
-            df = pd.read_csv(csv_file)
-            metrics_dict = df.iloc[0].to_dict()
+#SBATCH --account=es_hutter
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=32
+#SBATCH --gpus=1
+#SBATCH --gres=gpumem:12288m
+#SBATCH --time=2:00:00
+#SBATCH --mem-per-cpu=13312
+#SBATCH --tmp=90000
+#SBATCH --output="/cluster/home/haozhu1/Thesis/.out/depthany_eval_{str(accum_frames)}_depth{str(max_depth)}_out.log"
+#SBATCH --error="/cluster/home/haozhu1/Thesis/.out/depthany_eval_{str(accum_frames)}_depth{str(max_depth)}_out.log"
+#SBATCH --open-mode=truncate
 
-            metric_summary[date_str][accumu_level] = metrics_dict
-            
-    rows = []
-    for date, accumu_data in metric_summary.items():
-        for accumu_level, metrics in accumu_data.items():
-            row = {
-                'date': date,
-                'accumulation_level': accumu_level,
-                **metrics  # Unpack metrics into columns
-            }
-            rows.append(row)
+mkdir -p $TMPDIR/GrandTour
+tar -xf /cluster/scratch/haozhu1/Thesis/container/grandtour_depth_benchmark2.tar -C $TMPDIR
+tar -xf /cluster/scratch/haozhu1/depth_data/updated_images/GrandTour/GrandTour.tar  -C $TMPDIR/GrandTour
 
-    summary_df = pd.DataFrame(rows)
+# tar -xf /cluster/scratch/haozhu1/depth_data/eval_images/KITTI.tar -C $TMPDIR/GrandTour
+# sed -i 's|/cluster/scratch/haozhu1/depth_data/eval_images|/mnt|g' $TMPDIR/GrandTour/KITTI/val_pairs.txt
 
-    # Display as formatted table
-    # =================================================================
-    # Reorder columns (optional)
-    cols = ['date', 'accumulation_level'] + [c for c in summary_df.columns if c not in ['date', 'accumulation_level']]
-    summary_df = summary_df[cols]
+module load stack/2024-04 gcc/8.5.0 cuda/12.1.1 eth_proxy
 
-    summary_df.to_csv(f"/home/output/2024-11-02-17-10-25_{csv_pattern}.csv", index=False)
-            
+apptainer exec --nv --containall --writable --env LD_LIBRARY_PATH=/usr/lib/x86_64-linux-gnu  \
+  --env HF_HOME=/mnt/.cache/huggingface \
+  --env TRANSFORMERS_CACHE=/mnt/.cache/huggingface \
+  --env XDG_CACHE_HOME=/mnt/.cache \
+  --env MPLCONFIGDIR=/mnt/.config/matplotlib \
+  --bind $TMPDIR/GrandTour:/mnt/ \
+  $TMPDIR/grandtour_depth_benchmark2.sif \
+  /bin/bash -c "
+  export HOME=/home && export KLEINKRAM_ACTIVE=ACTIVE && \
+  source /opt/conda/etc/profile.d/conda.sh && \
+  conda activate grandtour && \
+  source /opt/ros/noetic/setup.bash && \
+  source /home/grand_tour_depth_benchmark/catkin_ws/devel/setup.bash && \
+  python -c 'import torch; print(torch.cuda.device_count())' && \
+  ls /home/grand_tour_depth_benchmark/third_parties/Depth-Anything-V2_grandtour/metric_depth/ && \
+  python /home/grand_tour_depth_benchmark/third_parties/Depth-Anything-V2_grandtour/metric_depth/eval.py \
+  --pretrained_from /home/grand_tour_depth_benchmark/third_parties/Depth-Anything-V2_grandtour/metric_depth/exp{max_depth}/grandtour{str(accum_frames)}/latest.pth    \
+  --max_depth {max_depth} --depth_alignment {depth_alignment} \
+  --dataset_file_path {test_txt} --dataset_root_dir /mnt/GrandTour/  \
+  --csv_file {csv_file}  --port {master_port} --dataset grandtour --vis_res FALSE
+  "
+
+  cp -r $TMPDIR/GrandTour/*/*.csv /cluster/scratch/haozhu1/depth_data/updated_images
+  cp -r $TMPDIR/GrandTour/*/visualizations /cluster/scratch/haozhu1/depth_data/updated_images
+ 
+  
+exit 0
+        """
+# --vis_res TRUE
+        script_path = os.path.join(submit_dir, f"eval_depthany_accum{accum_frames}.sh")
+        with open(script_path, "w") as file:
+            file.write(content)
+    
+        if SCHEDULE:
+            os.system(f"sbatch {script_path}")
+
 
 
