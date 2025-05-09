@@ -10,7 +10,7 @@ Script to run:
 python eval.py \
   --pretrained_from /home/grand_tour_depth_benchmark/third_parties/Depth-Anything-V2_grandtour/checkpoints/depth_anything_v2_metric_vkitti_vitl.pth    \
   --max_depth {max_depth} \
-  --dataset_file_path {test_txt} \
+  --dataset_txt_path {test_txt} \
   --dataset_root_dir /mnt/GrandTour/ \
   --csv_file {csv_file}  --port {master_port} --dataset grandtour --vis_res FALSE
 ```
